@@ -14,7 +14,7 @@
 # Copyright (C) 2022~2023 UsiFX <xprjkts@gmail.com>
 #
 
-export NITRON_HEADER_VERSION='2.3.1'
+export NITRON_HEADER_VERSION='2.5.0'
 
 # cmdavail <command> ## if available > return 0 & log; else return 1 & log
 cmdavail() {
@@ -28,8 +28,31 @@ cmdavail() {
 	fi
 }
 
-## Variables
+trapper() { printn -e "shutdown signal recieved, closing..."; }
 
+printcrnr() { printf "\r%-$(( ( 1 + ( ${#1} + ${#2} ) / COLUMNS ) * COLUMNS - ${#2} ))s%s\n" "$1" "$2"; }
+
+# usage: cmd & spin "text"
+spin() {
+	set +x
+	PID=$!
+	speed=0; anim='-\|/';
+	while [ -d /proc/$PID ]; do
+		sleep 0.02
+		speed=$(((speed + 1) % 4))
+		printf "\r[${anim:speed:1}] ${@}"
+		if [[ ! -d /proc/$PID ]]; then
+			if [[ "$?" == "0" ]]; then
+				printcrnr "[~] ${@}" "[  OK  ]"
+			else
+				printcrnr "[!] ${@}" "[ FAIL ]"
+			fi
+                fi
+	done
+}
+
+## Variables
+vars() {
 # Resource variables
 cpu_gov=$(cat "/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
 
@@ -77,6 +100,9 @@ else
 		batt_hth=$(upower -i /org/freedesktop/UPower/devices/battery_BAT0 | grep "warning-level:"| awk '{print $2}')
 	fi
 fi
+}
+
+vars
 
 ## End of variables
 
@@ -84,7 +110,7 @@ fi
 infogrbn() { grep "$2" "$1" | awk '{ print $2 }';}
 
 # infogrblongn <directory> <value>
-infogrblongn() { grep "$2" "$1" | awk '{ print $2,$3,$4,$5,$6,$7,$8,$9 }' | head -n1 && return $?;}
+infogrblongn() { grep "$2" "$1" | awk -F ": " '{ print $2,$3,$4,$5,$6,$7,$8,$9 }' | head -n1 && return $?;}
 
 # setmoden <nitron mode>
 setmoden() { echo "$1" > "$NITRON_LOG_DIR"/nitron.mode.lock ;}
@@ -116,7 +142,7 @@ modelockn()
 			setmoden "Automatic yellow"
 		;;
 		"Automatic red")
-			setmoden "Automatic [red]"
+			setmoden "Automatic red"
 		;;
 	esac
 }
@@ -129,6 +155,10 @@ oschk()
 	case "$OSCHK" in
 		"GNU/Linux")
 			PLATFORM="GNU/Linux"
+			if [[ -n "$WSL_DISTRO_NAME" ]]; then
+					PLATFORM="GNU/Linux (WSL)"
+					printn -e "Seems we are running under WSL environment, it's unusable at all with this tool."
+			fi
 			printn -l "OS: $PLATFORM"
 			return 0
 		;;
@@ -200,7 +230,7 @@ apin() {
 		echo "SU Provider: $(su --version)"
 		echo "Memory: $(( $(infogrbn "/proc/meminfo" "MemTotal") / 1024 / 1024 + 1 ))GB"
 		[[ "$(infogrblongn "/proc/cpuinfo" "Hardware")" ]] && echo "Hardware: $(infogrblongn "/proc/cpuinfo" "Hardware")" || echo "Hardware: $(infogrblongn "/proc/cpuinfo" "model name")"
-		echo "Machine: $(uname -m)"
+		echo "Kernel Archticture: $(uname -m)"
 		echo "CPU Governor: $cpu_gov"
 		echo "CPU Cores: $nr_cores"
 		echo "CPU Usage: $cputotalusage%"
@@ -299,29 +329,23 @@ com.tencent.ig
 com.mojang.minecraftpe
 com.activision.callofduty.shooter
 			" >> "$NITRON_RELAX_DIR/nitron.auto.conf"
-
-			NITRON_LIBAUTO_VERSION='1.1.0'
-			pkgs=$(cat "$NITRON_RELAX_DIR/nitron.auto.conf")
-			relax=$(pidof ${pkgs[@]} | tr ' ' '\n')
-			pidsavail() { ps -A -o PID | grep -q "$relax" && echo $?;}
-
+			export SOURCE="api-auto"
 			auto()
 			{
-					SOURCE="libauto"
-					if [[ $(pidsavail) == 0 ]]; then
+				autoalg() {
 						if [[ "$batt_pctg" -lt "25" ]]; then
 							if [[ "$(apin -mc | awk '{print $2}')" != "green" ]]; then
 								magicn -g
 								printn -ll "battery is under %25, applied green mode"
 							fi
 						else
-							if (( cputotalusage >= "50" <= "64" )); then
+							if (( cputotalusage >= "50" && cputotalusage <= "64" )); then
 								if [[ "$(apin -mc | awk '{print $2}')" != "yellow" ]]; then
 									printn -ll "cpu usage is 50%+"
 									magicn -y
 									printn -ll "heavy process(es) detected, applied balance mode."
 								fi
-							elif [[ "$cputotalusage" -gt "65" ]]; then
+							elif (( cputotalusage >= "65" )); then
 								if [[ "$(apin -mc | awk '{print $2}')" != "red" ]]; then
 										printn -ll "cpu usage is 65%+"
 										magicn -r
@@ -329,10 +353,22 @@ com.activision.callofduty.shooter
 								fi
 							fi
 						fi
-					fi
+				}
+
+				vars # update variables each execution
+				if [[ $(pgrep -f -c $PIDS) -gt 0 ]]; then
+					autoalg
+				elif [[ $PIDS == *"all"* ]]; then
+					autoalg
+				fi
 			}
-			while true; do
-				auto
+			while [[ "$SOURCE" == "api-auto" ]] && true; do
+				if [[ "$TRAPAUTO" == "true" ]]; then
+					exit
+				else
+					PIDS=$(cat /sdcard/nitron.auto.conf | tail -n +4)
+					auto
+				fi
 			done
 		;;
 		"-h" | "--help")
@@ -514,19 +550,19 @@ console_legacy() {
 							case $mode_num in
 								1)
 									magicn -r
-									printn -i "Process complete!"
+									printn -n "Gaming Mode activated."
 									sleep 2
 									break
 									;;
 								2)
 									magicn -y
-									printn -i "Process complete!"
+									printn -n "Balance Mode activated."
 									sleep 2
 									break
 									;;
 								3)
 									magicn -g
-									printn -i "Process complete!"
+									printn -n "Battery Mode activated."
 									sleep 2
 									break
 									;;
